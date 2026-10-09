@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-09T11:28:36.198Z",
+  "NEW": 17,
+  "UPDATED": 1,
+  "UNCHANGED": 0,
+  "crawled": 12,
+  "errors": [],
+  "registries": {
+    "csswinner": {
+      "found": 18
+    }
+  }
+}
