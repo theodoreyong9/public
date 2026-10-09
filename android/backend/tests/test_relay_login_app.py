@@ -304,7 +304,7 @@ class SentAppTests(Base):
                        # the app runs in an isolated frame: what that means for the file
                        'sandbox="allow-scripts"', "512 Ko", "URL ABSOLUE", "localStorage", "store-app-example.html", "bouton ▦"):
             self.assertIn(wanted, text)
-        self.assertIn("raw.githubusercontent.com/theodoreyong9/Aiwa_store/main/", text)
+        self.assertIn("raw.githubusercontent.com/theodoreyong9/public/main/", text)
         for mode in ("none", "pages", "android"):
             srv.deploy_mode = mode
             joined = " ".join(t for _, t in srv._instruction_lines("o/r", "w", "main", True))
@@ -513,7 +513,7 @@ class MailboxTests(Base):
         # The Aiwa app needs Termux: the widget's download button, on this very repository, copies this line and opens Termux.
         declared = json.loads((Path(__file__).resolve().parents[3] / "aiwa-android.json").read_text(encoding="utf-8"))
         self.assertTrue(srv.TERMUX_LINE_RE.fullmatch(declared["termux"]))
-        self.assertIn("raw.githubusercontent.com/theodoreyong9/Aiwa_store/main/android/backend/bootstrap.sh", declared["termux"])
+        self.assertIn("raw.githubusercontent.com/theodoreyong9/public/main/android/backend/bootstrap.sh", declared["termux"])
 
     def test_the_android_instruction_asks_for_the_declaration_only_when_termux_is_needed(self):
         srv.deploy_mode = "android"
@@ -712,7 +712,7 @@ class InstructionTests(Base):
                 self.assertNotIn("sources", dict(srv._instruction_lines(repo, "w", "main", True)), f"repo={repo} mode={mode}")
         srv.deploy_mode = "store"
         text = dict(srv._instruction_lines(None, None, None, True))["sources"]
-        for wanted in ("FACULTATIVE", "ignore cette ligne", "lecture seule", "theodoreyong9/Aiwa_store",
+        for wanted in ("FACULTATIVE", "ignore cette ligne", "lecture seule", "theodoreyong9/public",
                        "docs/YELLOWPAPER.md", "docs/EXPLAINED.md"):
             self.assertIn(wanted, text)
         # read-only: it must not contradict the rule that only the session's repositories are touched
@@ -1510,3 +1510,77 @@ class HttpTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AllowedToolsTests(unittest.TestCase):
+    def test_the_tools_the_instructions_ask_for_are_allowed_from_the_start(self):
+        import aiwa_server as srv
+        args = srv.CLOUD_ALLOWED_TOOLS_ARGS
+        self.assertEqual(args[0], "--allowedTools")
+        self.assertIn("mcp__Claude_Code_Remote__add_repo", args[1].split(","))
+        # only what attaching a repository needs: no other tool of that server, no shell
+        self.assertEqual(set(args[1].split(",")), {"mcp__Claude_Code_Remote__add_repo", "mcp__Claude_Code_Remote__register_repo_root"})
+
+
+class DefaultBranchTests(unittest.TestCase):
+    def test_an_unreadable_default_branch_is_none_and_the_old_helper_still_says_main(self):
+        with unittest.mock.patch.object(gh, "_git", side_effect=gh.GithubError("offline")):
+            self.assertIsNone(gh.default_branch_or_none("o/r"))
+            self.assertEqual(gh.default_branch("o/r"), "main")
+
+    def test_the_default_branch_is_read_from_the_remote_head(self):
+        with unittest.mock.patch.object(gh, "_git", return_value="ref: refs/heads/aiwa/2026\tHEAD\nabc\tHEAD\n"):
+            self.assertEqual(gh.default_branch_or_none("o/r"), "aiwa/2026")
+
+    def test_the_push_instruction_forbids_asking_for_repository_settings(self):
+        text = dict(srv._instruction_lines("o/r", "aiwa/x", "main", True))["push"]
+        self.assertIn("Ne me demande jamais de changer un réglage du dépôt", text)
+
+
+class PagesHintTests(unittest.TestCase):
+    def test_a_branch_the_environment_refuses_is_said_with_its_steps_and_its_page(self):
+        import aiwa_github as gh
+        hint = gh.pages_hint(['Branch "main" is not allowed to deploy to github-pages due to environment protection rules.'], "o/r")
+        self.assertEqual(hint["code"], "pages_branch")
+        self.assertEqual(hint["url"], "https://github.com/o/r/settings/environments")
+        self.assertGreaterEqual(len(hint["steps"]), 3)
+
+    def test_pages_not_turned_on_is_said_with_the_settings_page(self):
+        import aiwa_github as gh
+        hint = gh.pages_hint(["Get Pages site failed. Please verify that the repository has Pages enabled and configured to build using GitHub Actions"], "o/r")
+        self.assertEqual(hint["code"], "pages_off")
+        self.assertEqual(hint["url"], "https://github.com/o/r/settings/pages")
+
+    def test_any_other_failure_has_no_hint(self):
+        import aiwa_github as gh
+        self.assertIsNone(gh.pages_hint(["Process completed with exit code 1."], "o/r"))
+        self.assertIsNone(gh.pages_hint([], "o/r"))
+
+    def test_the_hint_goes_with_a_failed_run(self):
+        import aiwa_github as gh
+        from unittest import mock
+        runs = {"workflow_runs": [{"id": 7, "event": "push", "status": "completed", "conclusion": "failure", "head_sha": "abc", "name": "Deploy Pages",
+                                   "display_title": "t", "html_url": "u", "actor": {"login": "x"}, "updated_at": "2026-01-01T00:00:00Z"}]}
+        def fake(path):
+            if "/actions/runs?" in path: return runs
+            if path.endswith("/jobs"): return {"jobs": [{"id": 9, "conclusion": "failure"}]}
+            return [{"message": 'Branch "main" is not allowed to deploy to github-pages due to environment protection rules.'}]
+        gh._hints.clear()
+        with mock.patch.object(gh, "_get_json", side_effect=fake), mock.patch("urllib.request.urlopen") as opened:
+            opened.return_value.__enter__.return_value.read.return_value = json.dumps(runs).encode()
+            with mock.patch.object(gh.json, "load", return_value=runs):
+                result = gh.latest_run("o/r")
+        self.assertEqual(result["state"], "failure")
+        self.assertEqual(result["hint"]["code"], "pages_branch")
+
+
+class CiWatchAfterFailureTests(unittest.TestCase):
+    def test_lookups_stay_quick_for_a_while_after_a_failure_then_go_back_to_the_idle_pace(self):
+        import aiwa_server as srv
+        now = 10_000.0
+        recent = {"state": "failure", "failure_since": now - 60}
+        old = {"state": "failure", "failure_since": now - srv.CI_FAILURE_WATCH_SECONDS - 1}
+        with unittest.mock.patch.object(srv, "last_message_at", 0):
+            self.assertEqual(srv._ci_ttl(recent, now), srv.CI_POLL_FAST)
+            self.assertEqual(srv._ci_ttl(old, now), srv.CI_POLL_IDLE)
+            self.assertEqual(srv._ci_ttl({"state": "success"}, now), srv.CI_POLL_IDLE)

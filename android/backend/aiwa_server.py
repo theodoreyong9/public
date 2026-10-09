@@ -49,7 +49,7 @@ HOST = "127.0.0.1"
 PORT = 8787
 # Bumped whenever the app starts depending on a new backend feature; the
 # app compares it (via /api/status) with the version it expects.
-BACKEND_VERSION = 34
+BACKEND_VERSION = 44
 # Passed to `claude --model` when a new cloud session is created, and to
 # `/model` in an existing one. Kept restrictive: it ends up as a
 # command-line argument / slash-command argument.
@@ -72,7 +72,7 @@ APP_KEEP = 10
 APP_FILE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\.(?:app|aiwa)\.html")
 # The repository the Store lives in: an important but OPTIONAL source for what is built in the "store" mode
 # (see _sources_line).
-REFERENCE_REPO = "theodoreyong9/Aiwa_store"
+REFERENCE_REPO = "theodoreyong9/public"
 REFERENCE_RAW = f"https://raw.githubusercontent.com/{REFERENCE_REPO}/main"
 # The mailbox: when the cloud environment blocks the relay, what Claude has to say can still leave the session through GitHub, the one road
 # a session always has (the GitHub proxy), on a repository attached to it: Claude pushes aiwa-out/SIGNAL (and, for an app, the app) to its own
@@ -596,12 +596,13 @@ def _instruction_lines(repo, work, base, direct, origin=None):
                 f"Dépôt : {repo}. {began} de ce message c'est sur {repo} que tu travailles (la conversation continue, seul le dépôt change). "
                 f"Rattache-le avec l'outil `add_repo` (accès `push`) s'il n'est pas déjà attaché à ta session, et fais-y tout ce que les consignes ci-dessous disent d'un dépôt : "
                 f"branche, push, déploiement, vérification, signaux. Ne modifie plus {origin or 'les autres dépôts'} sauf si je te le demande. "
-                "Sans cet outil, ou si l'accès est refusé, dis-le-moi et arrête-toi."
+                f"Sans cet outil, ou si l'accès est refusé, réponds en UNE phrase : « Claude n'a pas accès à {repo} : sur github.com/settings/installations, ouvre Claude, choisis All repositories, enregistre. » Puis arrête-toi."
             )
         else:
             text = (
                 f"Dépôt : {repo}. Ton répertoire de travail doit être ce dépôt GitHub (vérifie `git remote -v`) ; si ce n'est pas le cas, dis-le-moi et arrête-toi. "
-                "Si le répertoire ne contient qu'un commit « stub » (le dépôt n'a pas été cloné), rattache le dépôt avec l'outil `add_repo` ; sans cet outil, ou si l'accès est refusé, dis-le-moi et arrête-toi."
+                "Si le répertoire ne contient qu'un commit « stub » (le dépôt n'a pas été cloné), rattache le dépôt avec l'outil `add_repo` ; sans cet outil, ou si l'accès est refusé, "
+                f"réponds en UNE phrase, sans rien construire ni proposer d'autre repli : « Claude n'a pas accès à {repo} : sur github.com/settings/installations, ouvre Claude, choisis All repositories, enregistre, puis relance une session. » Puis arrête-toi."
             )
         if more:
             text += (
@@ -628,7 +629,10 @@ def _instruction_lines(repo, work, base, direct, origin=None):
                 f"Le push se fait dans {base}, qui est la branche que GitHub Pages déploie ; seule exception : si le déploiement Pages de ce dépôt "
                 "est configuré pour publier depuis ta propre branche (regarde le workflow Pages et ses déclencheurs), pousse alors sur cette branche-là. "
                 f"Avant d'intégrer : récupère {base} et vérifie qu'il n'a pas reçu de modification parallèle qui entre en conflit avec les tiennes. "
-                "S'il y a un conflit, ou le moindre doute, n'intègre rien : explique-moi le problème et pose-moi la question. "
+                "Si la fusion se fait sans conflit, intègre et pousse sans me demander : une modification parallèle (un autre commit, une autre session, un workflow changé) "
+                "et les fichiers `aiwa-out/` de ta branche sont normaux, ils ne sont pas un doute. Si la fusion a un vrai conflit, résous-le toi-même quand il est mécanique ; "
+                "s'il ne l'est pas, n'intègre rien et pose-moi la question par la consigne Questions (le widget), pas dans ta conversation. "
+                "Ne me demande jamais de changer un réglage du dépôt (branche par défaut, Pages, environnements) : choisis toi-même la branche qui marche et dis-moi ce que tu as fait. "
                 "Jamais de force-push, jamais d'écrasement du travail de quelqu'un d'autre.",
             ))
         else:
@@ -644,6 +648,10 @@ def _instruction_lines(repo, work, base, direct, origin=None):
                 f"Déploiement : le site est publié par GitHub Pages via GitHub Actions, à l'adresse {github.pages_url(repo)}. "
                 "S'il n'y a pas encore de workflow Pages (actions/configure-pages, upload-pages-artifact, deploy-pages, déclenché à chaque push sur la branche principale), ajoute-le ; pas de branche gh-pages. "
                 f"Le déploiement ne se déclenche que par un push sur {base} : tant que ton travail n'y est pas intégré, rien n'est publié. "
+                "GitHub n'autorise le déploiement Pages (environnement github-pages) que depuis la branche PAR DÉFAUT du dépôt, et la première branche poussée dans un dépôt vide le devient. "
+                "Donc : si le dépôt est vide (`git ls-remote --heads origin` ne renvoie rien), pousse d'abord un premier commit sur `main`, avant toute branche de travail ; "
+                "si la branche par défaut n'est pas `main` (`git ls-remote --symref origin HEAD` le dit), mets CETTE branche dans les déclencheurs du workflow (`on: push: branches: [...]`) et déploie depuis elle : "
+                "un échec « not allowed to deploy to github-pages due to environment protection rules » vient de là, et ne doit pas me demander de réglage. "
                 "Si activer Pages avec la source « GitHub Actions » est hors de ta portée, dis-moi précisément le réglage à faire. Après un changement, vérifie que le déploiement a réussi.",
             ))
         elif deploy == "android":
@@ -876,7 +884,7 @@ def cloud_add(text):
 def _queue_followup(session_id, text):
     """Queues one message into an existing cloud session
     (`claude -p --cloud <id>`). Returns {"ok", "url", "error"}."""
-    command = ["claude", "-p", "--cloud", session_id, "--output-format", "json"]
+    command = ["claude", "-p", *CLOUD_ALLOWED_TOOLS_ARGS, "--cloud", session_id, "--output-format", "json"]
     with followup_lock:
         done = subprocess.run(command, input=text, capture_output=True, text=True, timeout=90)
     output = _clean((done.stdout or "") + (done.stderr or ""))
@@ -903,6 +911,28 @@ def _rename_session(session_id, title):
         print(f"[{_ts()}] rename failed: {err}", flush=True)
 
 
+# The tools Aiwa's own instructions ask a session to use: allowed from the start, so that the session does not stop to ask for them (a permission
+# prompt in the Claude conversation, which the widget cannot see and the person has to find). Attaching a repository is all it covers.
+CLOUD_ALLOWED_TOOLS = ["mcp__Claude_Code_Remote__add_repo", "mcp__Claude_Code_Remote__register_repo_root"]
+CLOUD_ALLOWED_TOOLS_ARGS = ["--allowedTools", ",".join(CLOUD_ALLOWED_TOOLS)]
+
+CLI_REPO_LOG = Path.home() / "aiwa_cli_repo_last.log"
+
+
+def _keep_cli_repo_lines(log):
+    """What the CLI said about the repository when it created the session (its debug log is deleted, and holds the message): only the lines
+    that speak of GitHub, the repository or the bundling, kept in a file and in the backend's log, so that "the session started empty" can be
+    explained afterwards instead of guessed."""
+    try:
+        lines = [ln[:300] for ln in log.splitlines() if re.search(r"github|repo|bundl|preflight|source|clone|debug file", ln, re.I)][-40:]
+        if not lines:
+            lines = [f"(the CLI's debug log has {len(log)} characters and none speaks of GitHub, the repository or the bundling)"]
+        CLI_REPO_LOG.write_text(f"[{_ts()}]\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        print(f"[{_ts()}] cloud_send: the CLI's lines on the repository: {len(lines)} kept in {CLI_REPO_LOG.name}", flush=True)
+    except OSError:
+        pass
+
+
 def _cli_repo_verdict(repo):
     """Why the CLI took the folder for the repository's content instead of naming the repository, from its debug log (which is then deleted:
     it holds the message): "no_app" (Claude's GitHub app is not installed on it), another reason of the CLI's own words, or None when it named
@@ -910,9 +940,11 @@ def _cli_repo_verdict(repo):
     try:
         log = CLI_DEBUG.read_text(encoding="utf-8", errors="replace")[-400_000:]
     except OSError:
+        _keep_cli_repo_lines("(the CLI wrote no debug file: nothing to read about the repository)")
         return None
     finally:
         CLI_DEBUG.unlink(missing_ok=True)
+    _keep_cli_repo_lines(log)
     reason = CLI_BUNDLING_RE.search(log)
     if reason is None:
         return None
@@ -952,6 +984,12 @@ def cloud_send(text, command=False):
                 work = base = None
                 if entry.get("repo"):
                     work, base = _session_targets(session_id, entry)
+                    # The default branch can change after the session started (the first branch pushed into an empty repository becomes it):
+                    # the instructions follow it, so Claude never has to ask which branch to integrate into.
+                    fresh = github.default_branch_or_none(entry["repo"])
+                    if fresh and fresh != base:
+                        _update_session(session_id, base=fresh)
+                        base = fresh
                     entry = _session_entry(session_id)
                 extra_text, fingerprint = _compose(entry, entry.get("repo"), work, base, entry.get("direct", True), entry.get("origin"))
                 sent += extra_text
@@ -972,6 +1010,8 @@ def cloud_send(text, command=False):
         # the directory is an empty stub whose origin is that repository, and the
         # cloud clones it itself, with Claude's own access (the user grants it at
         # claude.ai/connect-github). Nothing of the repository goes through the phone.
+        with lock:
+            repo_access_missing = None
         cloud_progress = f"préparation de la session sur {repo}…"
         try:
             directory, work, base = github.prepare_repo_dir(repo)
@@ -993,7 +1033,7 @@ def cloud_send(text, command=False):
         with lock:
             effort = current_effort
         CLI_DEBUG.unlink(missing_ok=True)
-        command_line = ["claude"] + (["--model", model] if model else []) + (["--effort", effort] if effort else []) + ["--debug-file", str(CLI_DEBUG), "--cloud", task]
+        command_line = ["claude"] + (["--model", model] if model else []) + (["--effort", effort] if effort else []) + CLOUD_ALLOWED_TOOLS_ARGS + ["--debug-file", str(CLI_DEBUG), "--cloud", task]
         # Under `script` the CLI gets a full terminal including a
         # controlling one (a bare pty has none, and a program that opens
         # /dev/tty then fails); without `script` it just gets the pty.
@@ -1014,7 +1054,7 @@ def cloud_send(text, command=False):
         if repo and found and verdict == "no_app":
             github_error = (
                 f"Claude n'a pas accès à {repo} : son app GitHub n'y est pas installée, donc la session est partie avec un dossier vide. "
-                "Installe-la sur ce dépôt, ou une fois pour tous (« All repositories »)."
+                "Une fois pour tous tes dépôts, présents et futurs : github.com/settings/installations, Claude, All repositories, Enregistrer."
             )
             with lock:
                 repo_access_missing = repo
@@ -1141,8 +1181,16 @@ def _site_snapshot():
     return {"url": url, "state": state, "kind": kind, "termux": _apk_termux_command(repo) if kind == "apk" else None}
 
 
+CI_FAILURE_WATCH_SECONDS = 600   # after a failure is first seen, the lookups stay quick this long: a fix is often on its way
+
+
 def _ci_probe(repo):
     info = github.latest_run(repo)
+    if info and info.get("state") == "failure":
+        with site_lock:
+            before = ci_cache["info"] if ci_cache["repo"] == repo else None
+        same = bool(before) and before.get("state") == "failure" and before.get("id") == info.get("id")
+        info["failure_since"] = before.get("failure_since", time.time()) if same else time.time()
     with site_lock:
         # A failed lookup (rate limit, private repository) keeps what was known.
         ci_cache.update(repo=repo, info=info if info is not None else (ci_cache["info"] if ci_cache["repo"] == repo else None), at=time.time(), busy=False)
@@ -1154,7 +1202,8 @@ def _ci_ttl(info, now=None):
     now = time.time() if now is None else now
     running = bool(info) and info.get("state") == "running"
     awaited = bool(last_message_at) and now - last_message_at < CI_WATCH_SECONDS
-    return CI_POLL_FAST if running or awaited else CI_POLL_IDLE
+    failing = bool(info) and info.get("state") == "failure" and now - info.get("failure_since", 0) < CI_FAILURE_WATCH_SECONDS
+    return CI_POLL_FAST if running or awaited or failing else CI_POLL_IDLE
 
 
 def _ci_lookup_allowed(now=None):
@@ -1948,7 +1997,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        global current_model, current_cloud, current_repo, push_main, deploy_mode, extra, current_effort, last_cloud
+        global current_model, current_cloud, current_repo, push_main, deploy_mode, extra, current_effort, last_cloud, repo_access_missing
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -2089,6 +2138,7 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 current_repo = requested or None
                 running = current_cloud
+                repo_access_missing = None   # a new choice starts afresh: the alert is shown again only if the next session fails again
                 if current_repo in extra_repos:
                     extra_repos.remove(current_repo)
                 _save_state()
